@@ -6,6 +6,7 @@ import { useFonts } from 'expo-font';
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import { SplashScreen } from 'expo-router';
 import { doorLockApi } from '@/utils/doorLockApi';
+import { SecurityNotifications } from '@/components/SecurityNotifications';
 
 // Prevent splash screen from auto-hiding
 SplashScreen.preventAutoHideAsync();
@@ -48,6 +49,7 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="+not-found" />
       </Stack>
+      <SecurityNotifications maxNotifications={3} autoHideDelay={8000} />
       <StatusBar style="light" />
     </>
   );

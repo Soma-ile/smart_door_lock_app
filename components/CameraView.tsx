@@ -11,6 +11,7 @@ import Animated, {
 import { LinearGradient } from 'expo-linear-gradient';
 import { CameraFeed } from '@/utils/mockData';
 import { doorLockApi } from '@/utils/doorLockApi';
+import { FaceDetectionResult, FrameResult } from '@/types';
 
 interface CameraViewProps {
   cameraFeed: CameraFeed;
@@ -30,39 +31,61 @@ export const CameraView = ({
   const [isMotionDetected, setIsMotionDetected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string>('connecting');
   const [error, setError] = useState<string | null>(null);
+  const [detectedFaces, setDetectedFaces] = useState<FaceDetectionResult[]>([]);
   
   useEffect(() => {
+    console.log('CameraView: Setting up WebSocket connection for real webcam feed');
+    
     // Handle connection status
-    doorLockApi.on('connectionStatus', (data) => {
+    const handleConnectionStatus = (data: any) => {
+      console.log('CameraView: Connection status:', data.status);
       setConnectionStatus(data.status);
       if (data.error) {
         setError(data.error);
       }
-    });
+    };
 
-    // Handle incoming frames
-    doorLockApi.on('frame', (data) => {
+    // Handle incoming frames with face tracking
+    const handleFrame = (data: any) => {
       if (data.image) {
+        console.log('CameraView: Received frame with face tracking');
         setCurrentFrame(data.image);
-        setError(null); // Clear any previous errors
+        setError(null);
         
-        // Update motion detection if faces are detected
-        if (data.results?.faces?.length > 0) {
-          setIsMotionDetected(true);
-          setTimeout(() => setIsMotionDetected(false), 3000);
+        // Update detected faces for face boxes
+        if (data.results?.faces) {
+          setDetectedFaces(data.results.faces);
+          
+          // Update motion detection when faces detected
+          if (data.results.faces.length > 0) {
+            setIsMotionDetected(true);
+            setTimeout(() => setIsMotionDetected(false), 3000);
+          }
+        } else {
+          setDetectedFaces([]);
         }
       }
-    });
+    };
 
-    // Handle errors
-    doorLockApi.on('error', (data) => {
+    // Handle WebSocket errors
+    const handleError = (data: any) => {
+      console.log('CameraView: WebSocket error:', data.message);
       setError(data.message);
-    });
+    };
+
+    // Set up event listeners
+    doorLockApi.on('connectionStatus', handleConnectionStatus);
+    doorLockApi.on('frame', handleFrame);
+    doorLockApi.on('error', handleError);
+
+    // Connect to get real webcam feed
+    doorLockApi.connect();
 
     return () => {
-      doorLockApi.off('connectionStatus', () => {});
-      doorLockApi.off('frame', () => {});
-      doorLockApi.off('error', () => {});
+      console.log('CameraView: Cleaning up WebSocket listeners');
+      doorLockApi.off('connectionStatus', handleConnectionStatus);
+      doorLockApi.off('frame', handleFrame);
+      doorLockApi.off('error', handleError);
     };
   }, []);
   
@@ -95,17 +118,64 @@ export const CameraView = ({
 
   // Render connection status overlay
   const renderConnectionStatus = () => {
-    if (connectionStatus === 'connected' && !error && currentFrame) {
+    // Only show error messages, not connecting status
+    if (!error) {
       return null;
     }
 
     return (
       <View style={styles.statusOverlay}>
         <Text style={styles.statusMessage}>
-          {error || `Camera ${connectionStatus}...`}
+          {error}
         </Text>
       </View>
     );
+  };
+  
+  // Render face boxes with names
+  const renderFaceBoxes = () => {
+    if (!detectedFaces.length || connectionStatus !== 'connected') {
+      return null;
+    }
+    
+    return detectedFaces.map((face, index) => {
+      const { location, name, confidence } = face;
+      const displayName = name !== "Unknown" ? name : "Unidentified";
+      
+      // Calculate box position and size
+      const boxStyle = {
+        position: 'absolute' as 'absolute',
+        top: location.top,
+        left: location.left,
+        width: location.right - location.left,
+        height: location.bottom - location.top,
+        borderWidth: 2,
+        borderColor: name !== "Unknown" ? '#00FF88' : '#FF3B30',
+        borderRadius: 4,
+      };
+      
+      // Calculate label position
+      const labelStyle = {
+        position: 'absolute' as 'absolute',
+        top: location.top - 25,
+        left: location.left,
+        backgroundColor: name !== "Unknown" ? 'rgba(0, 255, 136, 0.7)' : 'rgba(255, 59, 48, 0.7)',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 4,
+      };
+      
+      return (
+        <React.Fragment key={`face-${index}`}>
+          <View style={boxStyle} />
+          <View style={labelStyle}>
+            <Text style={styles.faceLabel}>
+              {displayName}
+            </Text>
+          </View>
+        </React.Fragment>
+      );
+    });
   };
   
   return (
@@ -116,7 +186,15 @@ export const CameraView = ({
             source={{ uri: `data:image/jpeg;base64,${currentFrame}` }}
             style={styles.cameraFeed}
             resizeMode="cover"
+            onError={(error) => {
+              console.log('CameraView: Error loading webcam frame:', error);
+              setCurrentFrame(null); // Reset to show fallback
+            }}
           />
+        ) : connectionStatus === 'connected' ? (
+          <View style={styles.loadingContainer}>
+            <Text style={styles.loadingText}>Loading webcam feed...</Text>
+          </View>
         ) : (
           <Image 
             source={{ uri: cameraFeed.streamUrl }}
@@ -124,6 +202,11 @@ export const CameraView = ({
             resizeMode="cover"
           />
         )}
+        
+        {/* Face detection boxes */}
+        <View style={styles.faceBoxContainer}>
+          {renderFaceBoxes()}
+        </View>
         
         {renderConnectionStatus()}
         
@@ -199,12 +282,22 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  faceBoxContainer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
+  },
+  faceLabel: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: 'Inter-Bold',
+  },
   statusOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
+    zIndex: 20,
   },
   statusMessage: {
     color: '#FFFFFF',
@@ -215,6 +308,7 @@ const styles = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'space-between',
+    zIndex: 15,
   },
   statusBar: {
     flexDirection: 'row',
@@ -280,5 +374,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginHorizontal: 8,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+  },
+  loadingText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: 'Inter-Medium',
   },
 });

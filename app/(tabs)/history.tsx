@@ -1,30 +1,171 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, FlatList, TextInput, TouchableOpacity, Platform } from 'react-native';
+import { StyleSheet, View, Text, FlatList, TextInput, TouchableOpacity, Platform, RefreshControl } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { mockAccessHistory } from '@/utils/mockData';
+import { AccessEvent } from '@/utils/mockData';
 import { TimelineItem } from '@/components/TimelineItem';
 import { formatDate } from '@/utils/dateUtils';
-import { Search, X, FilterX } from 'lucide-react-native';
+import { doorLockApi } from '@/utils/doorLockApi';
+import { Search, X, FilterX, RefreshCw } from 'lucide-react-native';
 
 export default function HistoryScreen() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [filteredHistory, setFilteredHistory] = useState(mockAccessHistory);
-  
+  const [history, setHistory] = useState<AccessEvent[]>([]);
+  const [filteredHistory, setFilteredHistory] = useState<AccessEvent[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<string>('disconnected');
+  const [userPhotos, setUserPhotos] = useState<{[key: string]: string}>({});
+
+  // Get user photo from cache or fetch from backend
+  const getUserPhoto = async (userName: string): Promise<string> => {
+    // Return cached photo if available
+    if (userPhotos[userName]) {
+      return userPhotos[userName];
+    }
+
+    try {
+      // Fetch users to get photos
+      const users = await doorLockApi.getUsers();
+      const user = users.find(u => u.name === userName);
+      
+      if (user && user.photo) {
+        const photoUrl = `data:image/jpeg;base64,${user.photo}`;
+        setUserPhotos(prev => ({ ...prev, [userName]: photoUrl }));
+        return photoUrl;
+      }
+    } catch (error) {
+      console.error('Error fetching user photo:', error);
+    }
+
+    // Return placeholder if no photo found
+    const placeholder = 'https://images.pexels.com/photos/1181690/pexels-photo-1181690.jpeg?auto=compress&cs=tinysrgb&w=600';
+    setUserPhotos(prev => ({ ...prev, [userName]: placeholder }));
+    return placeholder;
+  };
+
+  // Load access history
+  const loadHistory = async () => {
+    try {
+      setIsLoading(true);
+      
+      // Only try to load history if connected
+      if (connectionStatus !== 'connected') {
+        console.log('Not connected, showing empty history');
+        setHistory([]);
+        return;
+      }
+
+      // Try to get access history from backend
+      const historyData = await doorLockApi.getAccessHistory();
+      console.log('Loaded access history:', historyData);
+      
+      // Convert backend history to app format and get photos
+      const formattedHistory: AccessEvent[] = await Promise.all(
+        historyData.map(async (item: any, index: number) => {
+          const userPhoto = await getUserPhoto(item.name || 'Unknown');
+          return {
+            id: `access_${index}_${Date.now()}`,
+            userName: item.name || 'Unknown',
+            userPhoto: userPhoto,
+            timestamp: new Date(item.timestamp || Date.now()).toISOString(),
+            status: (item.is_authorized !== false) ? 'success' : 'failed',
+            confidence: item.confidence || 0
+          };
+        })
+      );
+      
+      // Sort by timestamp (newest first)
+      formattedHistory.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      
+      setHistory(formattedHistory);
+      console.log('Formatted history:', formattedHistory);
+      
+    } catch (error) {
+      console.error('Error loading access history:', error);
+      setHistory([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Listen for connection status changes
+  useEffect(() => {
+    const handleConnectionStatus = (data: any) => {
+      setConnectionStatus(data.status);
+    };
+
+    doorLockApi.on('connectionStatus', handleConnectionStatus);
+    
+    return () => {
+      doorLockApi.off('connectionStatus', handleConnectionStatus);
+    };
+  }, []);
+
+  // Load history when connected
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      loadHistory();
+    }
+  }, [connectionStatus]);
+
+  // Listen for new access events to update history in real-time
+  useEffect(() => {
+    const handleNewEvent = async (eventData: any) => {
+      // Only add if it's a recognition event with user info
+      if (eventData.name && eventData.name !== 'Unknown') {
+        const userPhoto = await getUserPhoto(eventData.name);
+        const newEvent: AccessEvent = {
+          id: `live_${Date.now()}_${Math.random()}`,
+          userName: eventData.name,
+          userPhoto: userPhoto,
+          timestamp: new Date().toISOString(),
+          status: (eventData.is_authorized !== false) ? 'success' : 'failed',
+          confidence: eventData.confidence || 0
+        };
+
+        setHistory(prev => [newEvent, ...prev].slice(0, 100)); // Keep latest 100 events
+      }
+    };
+
+    const handleUnlockEvent = async (data: any) => {
+      if (data.user && data.user !== 'Manual') {
+        const userPhoto = await getUserPhoto(data.user);
+        const newEvent: AccessEvent = {
+          id: `unlock_${Date.now()}_${Math.random()}`,
+          userName: data.user,
+          userPhoto: userPhoto,
+          timestamp: new Date().toISOString(),
+          status: 'success',
+          confidence: 1.0
+        };
+
+        setHistory(prev => [newEvent, ...prev].slice(0, 100));
+      }
+    };
+
+    doorLockApi.on('recognition', handleNewEvent);
+    doorLockApi.on('door_unlocked', handleUnlockEvent);
+
+    return () => {
+      doorLockApi.off('recognition', handleNewEvent);
+      doorLockApi.off('door_unlocked', handleUnlockEvent);
+    };
+  }, []);
+
   // Filter history based on search query
   useEffect(() => {
     if (!searchQuery.trim()) {
-      setFilteredHistory(mockAccessHistory);
+      setFilteredHistory(history);
       return;
     }
     
     const query = searchQuery.toLowerCase();
-    const filtered = mockAccessHistory.filter(item => 
+    const filtered = history.filter(item => 
       item.userName.toLowerCase().includes(query) ||
       formatDate(item.timestamp).toLowerCase().includes(query)
     );
     
     setFilteredHistory(filtered);
-  }, [searchQuery]);
+  }, [searchQuery, history]);
   
   // Clear search
   const clearSearch = () => {
