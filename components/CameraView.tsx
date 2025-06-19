@@ -32,6 +32,7 @@ export const CameraView = ({
   const [connectionStatus, setConnectionStatus] = useState<string>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [detectedFaces, setDetectedFaces] = useState<FaceDetectionResult[]>([]);
+  const [frameUpdateCount, setFrameUpdateCount] = useState(0);
   
   useEffect(() => {
     console.log('CameraView: Setting up WebSocket connection for real webcam feed');
@@ -45,14 +46,27 @@ export const CameraView = ({
       }
     };
 
+    // Frame throttling to prevent excessive re-renders
+    let lastFrameUpdate = 0;
+    const frameThrottleMs = 100; // Update max every 100ms (10 FPS on frontend)
+
     // Handle incoming frames with face tracking
     const handleFrame = (data: any) => {
       if (data.image) {
-        console.log('CameraView: Received frame with face tracking');
-        setCurrentFrame(data.image);
-        setError(null);
+        const now = Date.now();
         
-        // Update detected faces for face boxes
+        // Throttle frame updates to prevent React Native flickering
+        if (now - lastFrameUpdate >= frameThrottleMs) {
+          console.log('CameraView: Updating frame');
+          setCurrentFrame(data.image);
+          setError(null);
+          lastFrameUpdate = now;
+          
+          // Increment counter to force key update
+          setFrameUpdateCount(prev => prev + 1);
+        }
+        
+        // Always update face tracking data (lightweight)
         if (data.results?.faces) {
           setDetectedFaces(data.results.faces);
           
@@ -178,8 +192,73 @@ export const CameraView = ({
     });
   };
   
+  if (isFullScreen) {
+    // Fullscreen mode - use back button to minimize
+    return (
+      <View style={styles.fullScreenContainer}>
+        <View style={styles.cameraContainer}>
+          {currentFrame ? (
+            <Image 
+              key={`frame-${frameUpdateCount}`}
+              source={{ uri: `data:image/jpeg;base64,${currentFrame}` }}
+              style={styles.cameraFeed}
+              resizeMode="cover"
+              onError={(error) => {
+                console.log('CameraView: Error loading webcam frame:', error);
+                setCurrentFrame(null); // Reset to show fallback
+              }}
+            />
+          ) : connectionStatus === 'connected' ? (
+            <View style={styles.loadingContainer}>
+              <Text style={styles.loadingText}>Loading webcam feed...</Text>
+            </View>
+          ) : (
+            <Image 
+              source={{ uri: cameraFeed.streamUrl }}
+              style={styles.cameraFeed}
+              resizeMode="cover"
+            />
+          )}
+          
+          {/* Face detection boxes */}
+          <View style={styles.faceBoxContainer}>
+            {renderFaceBoxes()}
+          </View>
+          
+          {renderConnectionStatus()}
+          
+          <View style={styles.overlay}>
+            <View style={styles.statusBar}>
+              <View style={styles.statusContainer}>
+                <Animated.View style={[styles.recordingDot, recordDotAnimatedStyle]} />
+                <Text style={styles.statusText}>
+                  {connectionStatus === 'connected' ? 'LIVE' : 'OFFLINE'}
+                </Text>
+              </View>
+              <Text style={styles.resolutionText}>{cameraFeed.resolution}</Text>
+            </View>
+            
+            <Animated.View style={[styles.motionAlert, motionAnimatedStyle]}>
+              <LinearGradient
+                colors={['rgba(255, 59, 48, 0)', 'rgba(255, 59, 48, 0.3)']}
+                style={styles.motionGradient}
+              />
+              <Text style={styles.motionText}>MOTION DETECTED</Text>
+            </Animated.View>
+            
+            {/* Fullscreen hint */}
+            <View style={styles.fullscreenHint}>
+              <Text style={styles.hintText}>Press back button to minimize</Text>
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  // Regular mode - with expand button only
   return (
-    <View style={[styles.container, isFullScreen && styles.fullScreenContainer]}>
+    <View style={styles.container}>
       <View style={styles.cameraContainer}>
         {currentFrame ? (
           <Image 
@@ -239,13 +318,16 @@ export const CameraView = ({
             
             <TouchableOpacity 
               style={styles.controlButton}
-              onPress={onToggleFullScreen}
+              onPress={() => {
+                console.log('CameraView: Expand button pressed');
+                if (onToggleFullScreen) {
+                  onToggleFullScreen();
+                } else {
+                  console.log('CameraView: onToggleFullScreen callback not provided');
+                }
+              }}
             >
-              {isFullScreen ? (
-                <Minimize2 size={24} color="#FFFFFF" />
-              ) : (
-                <Maximize2 size={24} color="#FFFFFF" />
-              )}
+              <Maximize2 size={24} color="#FFFFFF" />
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.controlButton}>
@@ -385,5 +467,20 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontFamily: 'Inter-Medium',
+  },
+  fullscreenHint: {
+    position: 'absolute',
+    bottom: 20,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  hintText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontFamily: 'Inter-Medium',
+    textAlign: 'center',
   },
 });

@@ -1,0 +1,26 @@
+[Unit]
+Description=Smart Door Lock Face Recognition System
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=raspberrypi
+Group=raspberrypi
+WorkingDirectory=/home/raspberrypi/smart_door_lock
+Environment=PATH=/home/raspberrypi/smart_door_lock/smart_door_env/bin
+ExecStart=/home/raspberrypi/smart_door_lock/smart_door_env/bin/python /home/raspberrypi/smart_door_lock/face_recognition_system_optimized.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Give the service time to start up
+TimeoutStartSec=60
+
+# Environment variables
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target

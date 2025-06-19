@@ -414,8 +414,54 @@ class FaceRecognitionSystem:
             async for message in websocket:
                 try:
                     data = json.loads(message)
+                    
+                    # Clean logging based on message type and content
+                    message_type = data.get('type', 'unknown')
+                    
+                    # Skip logging for large base64 data or frequent/noisy message types
+                    should_skip_logging = (
+                        len(message) > 500 or  # Skip very large messages
+                        message_type in ['ping', 'frame_data'] or  # Skip frequent messages
+                        (len(message) > 100 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/={},":\' ' for c in message))
+                    )
+                    
+                    if not should_skip_logging:
+                        # Pretty print JSON messages for better readability
+                        try:
+                            # Create a clean copy for logging (remove large data fields)
+                            log_data = data.copy()
+                            
+                            # Remove or truncate large fields
+                            if 'image' in log_data and len(str(log_data['image'])) > 50:
+                                log_data['image'] = f"[BASE64_IMAGE_{len(str(log_data['image']))}bytes]"
+                            if 'data' in log_data and isinstance(log_data['data'], dict) and 'image' in log_data['data']:
+                                if len(str(log_data['data']['image'])) > 50:
+                                    log_data['data']['image'] = f"[BASE64_IMAGE_{len(str(log_data['data']['image']))}bytes]"
+                            
+                            print(f"\n📨 [{client_ip}] {message_type.upper()}")
+                            if len(log_data) > 1 or (len(log_data) == 1 and 'type' not in log_data):
+                                print(f"   📄 {json.dumps(log_data, indent=2)}")
+                        except:
+                            # Fallback to simple logging if JSON formatting fails
+                            print(f"📨 [{client_ip}] {message_type}: {message[:100]}{'...' if len(message) > 100 else ''}")
+                    
                     response = await self.handle_message(data)
                     if response:
+                        # Clean response logging
+                        response_type = response.get('type', 'response')
+                        if response_type not in ['pong', 'frame']:  # Skip frequent response types
+                            try:
+                                log_response = response.copy()
+                                if 'data' in log_response and isinstance(log_response['data'], dict):
+                                    if 'image' in log_response['data'] and len(str(log_response['data']['image'])) > 50:
+                                        log_response['data']['image'] = f"[BASE64_IMAGE_{len(str(log_response['data']['image']))}bytes]"
+                                
+                                print(f"📤 [{client_ip}] {response_type.upper()}")
+                                if len(log_response) > 1 or (len(log_response) == 1 and 'type' not in log_response):
+                                    print(f"   📄 {json.dumps(log_response, indent=2)}")
+                            except:
+                                print(f"📤 [{client_ip}] {response_type}")
+                        
                         await websocket.send(json.dumps(response))
                         
                 except json.JSONDecodeError:
@@ -663,4 +709,4 @@ if __name__ == "__main__":
         try:
             GPIO.cleanup()
         except:
-            pass 
+            pass

@@ -9,6 +9,7 @@ import { User } from '@/utils/mockData';
 import { doorLockApi } from '@/utils/doorLockApi';
 import { Camera, Circle as XCircle, Save, FlipHorizontal, CheckCircle2, RefreshCw } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import FaceEnrollmentModal from '@/components/FaceEnrollmentModal';
 
 const IP_ADDRESS_KEY = '@settings/raspberry_pi_ip';
 
@@ -22,6 +23,7 @@ export default function UsersScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string>('disconnected');
   const [currentIP, setCurrentIP] = useState<string>('');
+  const [isFaceEnrollmentModalVisible, setIsFaceEnrollmentModalVisible] = useState(false);
 
   // Load users on component mount
   useEffect(() => {
@@ -92,7 +94,7 @@ export default function UsersScreen() {
       const formattedUsers: User[] = usersData.map((user: any, index: number) => ({
         id: `${user.name}_${index}_${Date.now()}`, // Ensure unique IDs
         name: user.name,
-        photo: `data:image/jpeg;base64,${user.photo || ''}`,
+        photo: user.photo || 'https://images.pexels.com/photos/1181690/pexels-photo-1181690.jpeg?auto=compress&cs=tinysrgb&w=600', // Use real photo or placeholder
         addedDate: new Date().toISOString(),
       }));
       
@@ -424,6 +426,33 @@ export default function UsersScreen() {
               />
             </View>
             
+            {/* Enhanced enrollment option */}
+            <View style={styles.quickAddContainer}>
+              <Text style={styles.quickAddLabel}>Enhanced Enrollment (With Preview)</Text>
+              <Button
+                title="Enroll with Camera Preview"
+                variant="primary"
+                onPress={() => {
+                  if (!newUserName.trim()) {
+                    if (Platform.OS === 'web') {
+                      alert('Please enter a name first');
+                    } else {
+                      Alert.alert('Error', 'Please enter a name first');
+                    }
+                    return;
+                  }
+                  setIsAddUserModalVisible(false);
+                  setIsFaceEnrollmentModalVisible(true);
+                }}
+                style={styles.quickAddButton}
+                icon={<Camera size={18} color="#121214" />}
+                disabled={isLoading || !newUserName.trim()}
+              />
+              <Text style={styles.quickAddNote}>
+                Live camera preview with multi-photo capture for improved accuracy
+              </Text>
+            </View>
+
             {/* Quick add option */}
             <View style={styles.quickAddContainer}>
               <Text style={styles.quickAddLabel}>Quick Add (Auto-capture)</Text>
@@ -496,6 +525,20 @@ export default function UsersScreen() {
           </Card>
         </View>
       </Modal>
+
+      {/* Face Enrollment Modal with Preview */}
+      <FaceEnrollmentModal
+        visible={isFaceEnrollmentModalVisible}
+        onClose={() => {
+          setIsFaceEnrollmentModalVisible(false);
+          setNewUserName('');
+        }}
+        onSuccess={() => {
+          loadUsers(); // Reload users after successful enrollment
+          setNewUserName('');
+        }}
+        userName={newUserName}
+      />
     </View>
   );
 }

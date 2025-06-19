@@ -93,10 +93,22 @@ class DoorLockApi {
         });
       };
 
+      // Helper function to check if a string is likely base64 image data
+      const isBase64ImageData = (str: string) => {
+        if (str.length <= 100) return false;
+        // Check if string contains only valid base64 characters
+        return /^[A-Za-z0-9+/=]+$/.test(str);
+      };
+
       this.ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          console.log('📨 Received WebSocket message:', message.type, message.data);
+          // Only log if the data is not a long base64 string
+          if (typeof message.data !== 'string' || !isBase64ImageData(message.data)) {
+            console.log('📨 Received WebSocket message:', message.type, message.data);
+          } else {
+            console.log('📨 Received WebSocket message:', message.type, '[Base64 Image Data]');
+          }
           this.emit(message.type, message.data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
@@ -377,7 +389,7 @@ class DoorLockApi {
     });
   }
 
-  async addUserFromWebcam(name: string): Promise<boolean> {
+  async addUserFromWebcam(name: string, progressCallback?: (progress: { current: number; total: number; message: string }) => void): Promise<boolean> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket not connected');
     }
@@ -385,11 +397,12 @@ class DoorLockApi {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Add user from webcam timeout'));
-      }, 15000);
+      }, 30000); // Increased timeout for multi-photo capture
 
       const handleResponse = (data: any) => {
         clearTimeout(timeout);
         this.off('user_added_from_webcam', handleResponse);
+        this.off('user_enrollment_progress', handleProgress);
         
         if (data.success) {
           resolve(true);
@@ -398,7 +411,18 @@ class DoorLockApi {
         }
       };
 
+      const handleProgress = (data: any) => {
+        if (progressCallback) {
+          progressCallback({
+            current: data.current,
+            total: data.total,
+            message: data.message
+          });
+        }
+      };
+
       this.on('user_added_from_webcam', handleResponse);
+      this.on('user_enrollment_progress', handleProgress);
 
       this.ws!.send(JSON.stringify({
         type: 'add_user_from_webcam',
@@ -451,6 +475,80 @@ class DoorLockApi {
 
       this.ws!.send(JSON.stringify({
         type: 'get_access_history'
+      }));
+    });
+  }
+
+  async rebootSystem(): Promise<boolean> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket not connected');
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Reboot system timeout'));
+      }, 10000);
+
+      const handleResponse = (data: any) => {
+        clearTimeout(timeout);
+        this.off('reboot_response', handleResponse);
+        
+        if (data.success) {
+          resolve(true);
+        } else {
+          reject(new Error(data.error || 'Failed to reboot system'));
+        }
+      };
+
+      this.on('reboot_response', handleResponse);
+
+      this.ws!.send(JSON.stringify({
+        type: 'reboot_system'
+      }));
+    });
+  }
+
+  requestDoorStatus(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.log('WebSocket not connected, cannot request door status');
+      return;
+    }
+
+    this.ws.send(JSON.stringify({
+      type: 'get_door_status'
+    }));
+  }
+
+  async updateDoorConfig(config: {
+    auto_unlock: boolean;
+    unlock_confidence: number;
+    lock_duration: number;
+  }): Promise<boolean> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket not connected');
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Update door config timeout'));
+      }, 5000);
+
+      const handleResponse = (data: any) => {
+        clearTimeout(timeout);
+        this.off('config_response', handleResponse);
+        
+        if (data.success) {
+          resolve(true);
+        } else {
+          reject(new Error(data.error || 'Failed to update door config'));
+        }
+      };
+
+      this.on('config_response', handleResponse);
+
+      this.ws!.send(JSON.stringify({
+        type: 'update_door_config',
+        config
       }));
     });
   }

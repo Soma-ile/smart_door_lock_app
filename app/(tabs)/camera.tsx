@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Platform, ScrollView, Modal, FlatList, Image, Alert, Dimensions } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Platform, ScrollView, Modal, FlatList, Image, Alert, Dimensions, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
@@ -95,7 +95,12 @@ export default function CameraScreen() {
   
   // Toggle camera fullscreen
   const toggleFullScreen = () => {
-    setIsFullScreenCamera(prev => !prev);
+    console.log('CameraScreen: toggleFullScreen called, current state:', isFullScreenCamera);
+    setIsFullScreenCamera(prev => {
+      const newState = !prev;
+      console.log('CameraScreen: Setting isFullScreenCamera to:', newState);
+      return newState;
+    });
   };
   
   // Take snapshot (simulated)
@@ -221,6 +226,22 @@ export default function CameraScreen() {
       status: prev.status === 'online' ? 'offline' : 'online'
     }));
   };
+
+  // Handle back button press for fullscreen camera
+  useEffect(() => {
+    const backAction = () => {
+      if (isFullScreenCamera) {
+        console.log('CameraScreen: Back button pressed, minimizing fullscreen camera');
+        setIsFullScreenCamera(false);
+        return true; // Prevent default back action
+      }
+      return false; // Allow default back action
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+
+    return () => backHandler.remove();
+  }, [isFullScreenCamera]);
 
   const renderGalleryItem = ({ item }: { item: GalleryImage }) => (
     <TouchableOpacity

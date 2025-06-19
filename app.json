@@ -26,6 +26,12 @@
     },
     "android": {
       "package": "com.anonymous.projectzephyrus"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "4e8bd87d-1fe3-4e7c-8b89-c2c516c8d567"
+      }
     }
   }
 }

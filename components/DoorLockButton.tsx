@@ -16,9 +16,10 @@ import * as Haptics from 'expo-haptics';
 interface DoorLockButtonProps {
   isLocked: boolean;
   onToggle: () => void;
+  isLoading?: boolean;
 }
 
-export const DoorLockButton = ({ isLocked, onToggle }: DoorLockButtonProps) => {
+export const DoorLockButton = ({ isLocked, onToggle, isLoading = false }: DoorLockButtonProps) => {
   const [isAnimating, setIsAnimating] = useState(false);
 
   // Animation values
@@ -26,13 +27,34 @@ export const DoorLockButton = ({ isLocked, onToggle }: DoorLockButtonProps) => {
   const rotation = useSharedValue(0);
   const glow = useSharedValue(0);
 
-  // Trigger haptic feedback on state change
+  // Trigger haptic feedback and animation on state change
   useEffect(() => {
     if (Platform.OS !== 'web') {
       Haptics.notificationAsync(
         isLocked 
           ? Haptics.NotificationFeedbackType.Success 
           : Haptics.NotificationFeedbackType.Warning
+      );
+    }
+
+    // Trigger animation when state changes (from external updates)
+    if (!isAnimating) {
+      // Button state change animation
+      scale.value = withSequence(
+        withTiming(1.05, { duration: 150 }),
+        withTiming(1, { duration: 100 })
+      );
+      
+      // Rotation animation based on new state
+      rotation.value = withTiming(
+        isLocked ? 0 : Math.PI, 
+        { duration: 400 }
+      );
+      
+      // Brief glow effect
+      glow.value = withSequence(
+        withTiming(0.8, { duration: 200 }),
+        withTiming(isLocked ? 0 : 0.2, { duration: 200 })
       );
     }
   }, [isLocked]);
@@ -106,8 +128,8 @@ export const DoorLockButton = ({ isLocked, onToggle }: DoorLockButtonProps) => {
     };
   });
 
-  const statusColor = isLocked ? '#00FF88' : '#FF3B30';
-  const statusText = isLocked ? 'Locked' : 'Unlocked';
+  const statusColor = isLoading ? '#00D4FF' : (isLocked ? '#00FF88' : '#FF3B30');
+  const statusText = isLoading ? 'Connecting...' : (isLocked ? 'Locked' : 'Unlocked');
 
   return (
     <View style={styles.container}>
@@ -124,7 +146,7 @@ export const DoorLockButton = ({ isLocked, onToggle }: DoorLockButtonProps) => {
         <TouchableOpacity
           style={styles.button}
           onPress={handlePress}
-          disabled={isAnimating}
+          disabled={isAnimating || isLoading}
         >
           <Animated.View style={[styles.iconContainer, animatedIconStyle]}>
             {isLocked ? (

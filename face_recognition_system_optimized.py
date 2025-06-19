@@ -113,13 +113,13 @@ class DoorLockController:
             print(f"Error cleaning up door lock controller: {e}")
 
 class FaceRecognitionSystem:
-    def __init__(self, tolerance=0.6, model='hog', auto_unlock=True, unlock_confidence=0.8):
+    def __init__(self, tolerance=0.4, model='hog', auto_unlock=True, unlock_confidence=0.5):
         """
         Initialize face recognition system
         tolerance: Lower values = more strict matching
         model: 'hog' for CPU (faster on Pi), 'cnn' for GPU (more accurate)
         auto_unlock: Automatically unlock door when recognized face is detected
-        unlock_confidence: Minimum confidence required for auto unlock
+        unlock_confidence: Minimum confidence required for auto unlock (default: 0.5 = 50%)
         """
         self.tolerance = tolerance
         self.model = model
@@ -157,6 +157,15 @@ class FaceRecognitionSystem:
         # Load existing face data and config
         self.load_face_data()
         self.load_config()
+        
+        # Print initial configuration for debugging
+        print(f"🔧 Initial configuration:")
+        print(f"   Auto unlock enabled: {self.auto_unlock}")
+        print(f"   Unlock confidence threshold: {self.unlock_confidence}")
+        print(f"   Known users: {len(self.known_face_names)}")
+        print(f"   Authorized users: {list(self.authorized_users)}")
+        print(f"   Door lock duration: {self.door_lock.lock_duration} seconds")
+        print(f"   Door lock pin: {self.door_lock.relay_pin}")
     
     def load_face_data(self) -> None:
         """Load previously saved face encodings and names"""
@@ -324,6 +333,9 @@ class FaceRecognitionSystem:
         perform_recognition = force_recognition or (self.frame_count % self.recognition_interval == 0)
         results = []
         
+        # Increment frame count for recognition interval
+        self.frame_count += 1
+        
         if perform_recognition:
             # Resize frame for faster processing (these operations are quick)
             small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
@@ -366,21 +378,49 @@ class FaceRecognitionSystem:
                         confidence = float(1 - face_distances[best_match_index])
                         is_authorized = name in self.authorized_users
                         
+                        # Debug logging for auto-unlock
+                        print(f"🔍 Face detected: {name}")
+                        print(f"   Confidence: {confidence:.3f} (required: {self.unlock_confidence})")
+                        print(f"   Is authorized: {is_authorized}")
+                        print(f"   Auto unlock enabled: {self.auto_unlock}")
+                        print(f"   Door currently unlocked: {self.door_lock.is_unlocked}")
+                        print(f"   Authorized users: {list(self.authorized_users)}")
+                        
                         # Auto unlock door if conditions are met
                         if (self.auto_unlock and is_authorized and 
                             confidence >= self.unlock_confidence and 
                             not self.door_lock.is_unlocked):
                             
+                            print(f"🚪 Attempting to unlock door for {name}")
                             unlock_success = self.door_lock.unlock_door()
                             if unlock_success:
+                                print(f"✅ Door unlocked successfully for {name}")
                                 await self.broadcast_event('door_unlocked', {
                                     'user': name,
                                     'confidence': confidence,
                                     'auto_unlock': True
                                 })
+                            else:
+                                print(f"❌ Failed to unlock door for {name}")
+                        else:
+                            # Log why auto-unlock didn't trigger
+                            reasons = []
+                            if not self.auto_unlock:
+                                reasons.append("auto_unlock disabled")
+                            if not is_authorized:
+                                reasons.append("user not authorized")
+                            if confidence < self.unlock_confidence:
+                                reasons.append(f"confidence too low ({confidence:.3f} < {self.unlock_confidence})")
+                            if self.door_lock.is_unlocked:
+                                reasons.append("door already unlocked")
+                            
+                            if reasons:
+                                print(f"🚫 Auto-unlock skipped for {name}: {', '.join(reasons)}")
                         
-                        # Log recognition event
-                        await self.log_recognition(name, confidence, is_authorized)
+                        # Only log and broadcast recognition event if confidence meets threshold
+                        if confidence >= self.unlock_confidence:
+                            # Log recognition event
+                            await self.log_recognition(name, confidence, is_authorized)
                 
                 # Scale coordinates back up
                 results.append({
@@ -402,7 +442,7 @@ class FaceRecognitionSystem:
         }
     
     async def start_camera_stream(self) -> None:
-        """Start camera stream and recognition"""
+        """Start camera stream and recognition with improved performance"""
         if self.running:
             return
             
@@ -426,13 +466,11 @@ class FaceRecognitionSystem:
             fps = self.camera.get(cv2.CAP_PROP_FPS)
             print(f"Camera properties - Width: {width}, Height: {height}, FPS: {fps}")
             
-            # Set camera properties - use lower resolution
+            # Set camera properties for optimal performance
             self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.camera.set(cv2.CAP_PROP_FPS, self.target_fps)
-            
-            # Set buffer size to 1 to avoid frame lag
-            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.camera.set(cv2.CAP_PROP_FPS, 30)  # Use camera's native FPS
+            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer to reduce lag
             
             # Verify settings were applied
             new_width = self.camera.get(cv2.CAP_PROP_FRAME_WIDTH)
@@ -443,109 +481,47 @@ class FaceRecognitionSystem:
             self.running = True
             print("Camera stream started successfully")
             
+            # Initialize frame processing variables  
             frame_count = 0
             start_time = datetime.now()
-            last_frame_time = time.time()
+            last_fps_report = time.time()
             
             while self.running and self.clients:
-                # Implement frame rate control
-                current_time = time.time()
-                elapsed = current_time - last_frame_time
-                
-                if elapsed < self.frame_interval:
-                    # Wait until it's time for the next frame
-                    await asyncio.sleep(self.frame_interval - elapsed)
-                    continue
-                
-                last_frame_time = current_time
-                
-                # Read frame
+                # Always read from camera to prevent buffer buildup
                 ret, frame = self.camera.read()
                 if not ret:
                     print("Failed to read frame from camera")
                     # Try to reinitialize camera
                     self.camera.release()
-                    await asyncio.sleep(1)  # Wait before retrying
+                    await asyncio.sleep(0.1)
                     self.camera = cv2.VideoCapture(0)
+                    self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    self.camera.set(cv2.CAP_PROP_FPS, self.target_fps)  # Match camera FPS to target
                     self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     if not self.camera.isOpened():
-                        print("Failed to reinitialize camera, retrying in 5 seconds")
-                        await asyncio.sleep(5)
+                        print("Failed to reinitialize camera, retrying...")
+                        await asyncio.sleep(1)
                     continue
                 
-                # Update frame counter
-                self.frame_count += 1
                 frame_count += 1
-                elapsed_time = (datetime.now() - start_time).total_seconds()
-                if elapsed_time >= 1.0:
-                    current_fps = frame_count/elapsed_time
-                    print(f"Current FPS: {current_fps:.2f}")
-                    frame_count = 0
-                    start_time = datetime.now()
                 
                 try:
-                    # Process frame
-                    results = await self.process_frame(frame)
-                    
-                    # Check system load and adjust quality
+                    # Process every frame - no artificial rate limiting
+                    loop = asyncio.get_event_loop()
                     quality = self.adjust_quality_based_on_load()
                     
-                    # Convert frame to JPEG with quality setting - run in thread pool
-                    loop = asyncio.get_event_loop()
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+                    # Process frame recognition and encoding
+                    results = await self.process_frame(frame)
                     
-                    # Run JPEG encoding in thread pool
-                    ret_encode, buffer = await loop.run_in_executor(
-                        None, 
-                        lambda: cv2.imencode('.jpg', frame, encode_param)
-                    )
-                    
-                    if not ret_encode:
-                        print("JPEG encoding failed")
-                        continue
-                    
-                    # Run base64 encoding in thread pool
-                    base64_bytes = await loop.run_in_executor(
+                    # Encode frame in thread pool
+                    base64_frame = await loop.run_in_executor(
                         None,
-                        lambda: base64.b64encode(buffer)
+                        lambda: self._encode_frame_to_base64(frame, quality, results)
                     )
                     
-                    # Decode is fast, can stay in main thread
-                    base64_frame = base64_bytes.decode('utf-8')
-                    
-                    # Check if we need to update bandwidth stats
-                    current_time = time.time()
-                    if current_time - self.last_bandwidth_check >= self.bandwidth_check_interval:
-                        self.last_bandwidth_check = current_time
-                        print(f"Current JPEG quality: {quality}, Frame size: {len(buffer)} bytes")
-                    
-                    # Draw face detection boxes and confidence on frame
-                    annotated_frame = self.draw_face_annotations(frame, results)
-                    
-                    # Convert annotated frame to JPEG with quality setting - run in thread pool
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-                    
-                    # Run JPEG encoding in thread pool for annotated frame
-                    ret_encode_annotated, buffer_annotated = await loop.run_in_executor(
-                        None, 
-                        lambda: cv2.imencode('.jpg', annotated_frame, encode_param)
-                    )
-                    
-                    if ret_encode_annotated:
-                        # Use annotated frame if encoding succeeded
-                        base64_bytes_annotated = await loop.run_in_executor(
-                            None,
-                            lambda: base64.b64encode(buffer_annotated)
-                        )
-                        base64_annotated_frame = base64_bytes_annotated.decode('utf-8')
-                        
-                        # Send annotated frame and results to clients
-                        await self.broadcast_event('frame', {
-                            'image': base64_annotated_frame,
-                            'results': results
-                        })
-                    else:
-                        # Fallback to original frame if annotation encoding failed
+                    if base64_frame:
+                        # Send frame to clients immediately
                         await self.broadcast_event('frame', {
                             'image': base64_frame,
                             'results': results
@@ -553,14 +529,50 @@ class FaceRecognitionSystem:
                     
                 except Exception as e:
                     print(f"Error processing frame: {e}")
+                    # Continue with next frame even if this one failed
                 
-                # No need for additional sleep as we're already controlling frame rate
+                # FPS monitoring every 5 seconds
+                current_time = time.time()
+                if current_time - last_fps_report >= 5.0:
+                    elapsed_time = (datetime.now() - start_time).total_seconds()
+                    actual_fps = frame_count / elapsed_time
+                    print(f"Streaming at {actual_fps:.1f} FPS")
+                    frame_count = 0
+                    start_time = datetime.now()
+                    last_fps_report = current_time
+                
+                # Very small yield to prevent blocking event loop completely
+                await asyncio.sleep(0.001)
                 
         except Exception as e:
             print(f"Error in camera stream: {e}")
             print("Stack trace:", traceback.format_exc())
         finally:
             self.stop_camera_stream()
+    
+    def _encode_frame_to_base64(self, frame, quality, results=None):
+        """Encode frame to base64 (synchronous helper for thread pool)"""
+        try:
+            # Use provided results or fallback to empty results
+            if results is None:
+                results = {'faces': []}
+            
+            # Draw annotations on frame
+            annotated_frame = self.draw_face_annotations(frame, results)
+            
+            # Encode to JPEG
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+            ret_encode, buffer = cv2.imencode('.jpg', annotated_frame, encode_param)
+            
+            if ret_encode:
+                # Convert to base64
+                base64_bytes = base64.b64encode(buffer)
+                return base64_bytes.decode('utf-8')
+            else:
+                return None
+        except Exception as e:
+            print(f"Error encoding frame: {e}")
+            return None
     
     def stop_camera_stream(self) -> None:
         """Stop camera stream"""
@@ -617,8 +629,72 @@ class FaceRecognitionSystem:
             async for message in websocket:
                 try:
                     data = json.loads(message)
+                    
+                    # Clean logging based on message type and content
+                    message_type = data.get('type', 'unknown')
+                    
+                    # Check if message contains a large base64 string
+                    def contains_large_base64(msg):
+                        if len(msg) <= 100:
+                            return False
+                        
+                        # Look for base64 strings in the message
+                        import re
+                        # Find sequences of base64 characters that are longer than 100 chars
+                        base64_pattern = r'[A-Za-z0-9+/=]{100,}'
+                        matches = re.findall(base64_pattern, msg)
+                        
+                        # Check if any match contains only base64 characters
+                        for match in matches:
+                            base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+                            if all(c in base64_chars for c in match):
+                                return True
+                        return False
+                    
+                    # Skip logging for large base64 data or frequent/noisy message types  
+                    should_skip_logging = (
+                        contains_large_base64(message) or  # Skip messages containing base64 strings >100 chars
+                        message_type in ['ping', 'frame_data'] or  # Skip frequent messages
+                        len(message) > 1000  # Skip very large messages
+                    )
+                    
+                    if not should_skip_logging:
+                        # Pretty print JSON messages for better readability
+                        try:
+                            # Create a clean copy for logging (remove large data fields)
+                            log_data = data.copy()
+                            
+                            # Remove or truncate large fields
+                            if 'image' in log_data and len(str(log_data['image'])) > 50:
+                                log_data['image'] = f"[BASE64_IMAGE_{len(str(log_data['image']))}bytes]"
+                            if 'data' in log_data and isinstance(log_data['data'], dict) and 'image' in log_data['data']:
+                                if len(str(log_data['data']['image'])) > 50:
+                                    log_data['data']['image'] = f"[BASE64_IMAGE_{len(str(log_data['data']['image']))}bytes]"
+                            
+                            print(f"\n📨 [{client_ip}] {message_type.upper()}")
+                            if len(log_data) > 1 or (len(log_data) == 1 and 'type' not in log_data):
+                                print(f"   📄 {json.dumps(log_data, indent=2)}")
+                        except:
+                            # Fallback to simple logging if JSON formatting fails
+                            print(f"📨 [{client_ip}] {message_type}: {message[:100]}{'...' if len(message) > 100 else ''}")
+                    
                     response = await self.handle_message(data)
                     if response:
+                        # Clean response logging
+                        response_type = response.get('type', 'response')
+                        if response_type not in ['pong', 'frame']:  # Skip frequent response types
+                            try:
+                                log_response = response.copy()
+                                if 'data' in log_response and isinstance(log_response['data'], dict):
+                                    if 'image' in log_response['data'] and len(str(log_response['data']['image'])) > 50:
+                                        log_response['data']['image'] = f"[BASE64_IMAGE_{len(str(log_response['data']['image']))}bytes]"
+                                
+                                print(f"📤 [{client_ip}] {response_type.upper()}")
+                                if len(log_response) > 1 or (len(log_response) == 1 and 'type' not in log_response):
+                                    print(f"   📄 {json.dumps(log_response, indent=2)}")
+                            except:
+                                print(f"📤 [{client_ip}] {response_type}")
+                        
                         await websocket.send(json.dumps(response))
                         
                 except json.JSONDecodeError:
@@ -695,6 +771,14 @@ class FaceRecognitionSystem:
             result = await self.add_user_from_webcam(data['name'])
             return {'type': 'user_added_from_webcam', 'data': result}
             
+        elif message_type == 'reboot_system':
+            result = await self.reboot_system()
+            return {'type': 'reboot_response', 'data': result}
+            
+        elif message_type == 'reset_face_data':
+            result = await self.reset_face_data()
+            return {'type': 'reset_face_data_response', 'data': result}
+            
         return None
     
     async def update_performance_settings(self, settings: dict) -> dict:
@@ -728,7 +812,7 @@ class FaceRecognitionSystem:
             print(f"Error updating performance settings: {e}")
             return {'success': False, 'error': str(e)}
     
-    async def add_user(self, name: str, image_data: str, authorized: bool = False) -> dict:
+    async def add_user(self, name: str, image_data: str, authorized: bool = True) -> dict:
         """Add new user with base64 image data"""
         try:
             # Decode base64 image
@@ -925,8 +1009,8 @@ class FaceRecognitionSystem:
             print(f"Error capturing webcam photo: {e}")
             return {'success': False, 'error': str(e)}
     
-    async def add_user_from_webcam(self, name: str, authorized: bool = True) -> dict:
-        """Add user by capturing photo directly from webcam"""
+    async def add_user_from_webcam(self, name: str, authorized: bool = True, num_photos: int = 5) -> dict:
+        """Add user by capturing multiple photos directly from webcam for improved accuracy"""
         try:
             if not self.camera or not self.camera.isOpened():
                 # Try to open camera if not already open
@@ -946,60 +1030,142 @@ class FaceRecognitionSystem:
                 self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             
-            # Capture frame
-            ret, frame = self.camera.read()
-            if not ret:
-                return {'success': False, 'error': 'Failed to capture frame'}
+            print(f"📸 Starting multi-photo capture for user '{name}' - {num_photos} photos")
             
-            # Convert to RGB for face recognition
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            collected_encodings = []
+            best_photo = None
+            best_face_area = 0
+            capture_count = 0
+            attempts = 0
+            max_attempts = num_photos * 3  # Allow more attempts to get good photos
             
-            # Detect faces
-            face_locations = face_recognition.face_locations(rgb_frame, model=self.model)
-            if len(face_locations) != 1:
-                return {'success': False, 'error': f'Expected one face, found {len(face_locations)}. Please ensure only one person is visible.'}
+            # Give user time to position themselves
+            await asyncio.sleep(1)
             
-            # Get face encoding
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-            if not face_encodings:
-                return {'success': False, 'error': 'Failed to encode face'}
-            
-            face_encoding = face_encodings[0]
-            
-            # Check if this face is already known
-            if len(self.known_face_encodings) > 0:
-                matches = face_recognition.compare_faces(
-                    self.known_face_encodings, 
-                    face_encoding, 
-                    tolerance=self.tolerance
-                )
-                if any(matches):
-                    # Find the best match
-                    face_distances = face_recognition.face_distance(
+            while capture_count < num_photos and attempts < max_attempts:
+                attempts += 1
+                
+                # Capture frame
+                ret, frame = self.camera.read()
+                if not ret:
+                    print(f"⚠️ Failed to capture frame on attempt {attempts}")
+                    await asyncio.sleep(0.2)
+                    continue
+                
+                # Convert to RGB for face recognition
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Detect faces
+                face_locations = face_recognition.face_locations(rgb_frame, model=self.model)
+                
+                if len(face_locations) != 1:
+                    print(f"⚠️ Attempt {attempts}: Expected 1 face, found {len(face_locations)}. Retrying...")
+                    await asyncio.sleep(0.3)
+                    continue
+                
+                # Get face encoding
+                face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                if not face_encodings:
+                    print(f"⚠️ Attempt {attempts}: Failed to encode face. Retrying...")
+                    await asyncio.sleep(0.3)
+                    continue
+                
+                face_encoding = face_encodings[0]
+                face_location = face_locations[0]
+                
+                # Calculate face area to select best photo
+                top, right, bottom, left = face_location
+                face_area = (right - left) * (bottom - top)
+                
+                # Check quality - face should be reasonably sized
+                frame_area = frame.shape[0] * frame.shape[1]
+                face_ratio = face_area / frame_area
+                
+                if face_ratio < 0.05:  # Face too small
+                    print(f"⚠️ Attempt {attempts}: Face too small ({face_ratio:.3f}). Move closer.")
+                    await asyncio.sleep(0.3)
+                    continue
+                
+                if face_ratio > 0.6:  # Face too large
+                    print(f"⚠️ Attempt {attempts}: Face too large ({face_ratio:.3f}). Move back.")
+                    await asyncio.sleep(0.3)
+                    continue
+                
+                # Check if this face is already known (only on first encoding)
+                if capture_count == 0 and len(self.known_face_encodings) > 0:
+                    matches = face_recognition.compare_faces(
                         self.known_face_encodings, 
-                        face_encoding
+                        face_encoding, 
+                        tolerance=self.tolerance
                     )
-                    best_match_index = np.argmin(face_distances)
-                    existing_name = self.known_face_names[best_match_index]
-                    return {'success': False, 'error': f'This face is already registered as "{existing_name}"'}
+                    if any(matches):
+                        # Find the best match
+                        face_distances = face_recognition.face_distance(
+                            self.known_face_encodings, 
+                            face_encoding
+                        )
+                        best_match_index = np.argmin(face_distances)
+                        existing_name = self.known_face_names[best_match_index]
+                        return {'success': False, 'error': f'This face is already registered as "{existing_name}"'}
+                
+                # Store the encoding
+                collected_encodings.append(face_encoding)
+                capture_count += 1
+                
+                # Store the best photo (largest face)
+                if face_area > best_face_area:
+                    best_face_area = face_area
+                    # Extract and save face photo for profile
+                    padding = 30
+                    face_crop = frame[max(0, top-padding):min(frame.shape[0], bottom+padding), 
+                                     max(0, left-padding):min(frame.shape[1], right+padding)]
+                    best_photo = face_crop.copy()
+                
+                print(f"✅ Captured photo {capture_count}/{num_photos} (face ratio: {face_ratio:.3f})")
+                
+                # Broadcast progress to clients
+                await self.broadcast_event('user_enrollment_progress', {
+                    'name': name,
+                    'current': capture_count,
+                    'total': num_photos,
+                    'message': f'Captured photo {capture_count}/{num_photos}'
+                })
+                
+                # Wait between captures to allow for different poses/expressions
+                await asyncio.sleep(0.8)
             
-            # Extract and save face photo for profile
-            top, right, bottom, left = face_locations[0]
-            # Add some padding around the face
-            padding = 30
-            face_crop = frame[max(0, top-padding):min(frame.shape[0], bottom+padding), 
-                             max(0, left-padding):min(frame.shape[1], right+padding)]
+            if capture_count < num_photos:
+                return {
+                    'success': False, 
+                    'error': f'Only captured {capture_count}/{num_photos} usable photos. Please ensure good lighting and only one person visible.'
+                }
             
-            # Convert face crop to base64 for storage
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-            ret_encode, buffer = cv2.imencode('.jpg', face_crop, encode_param)
+            # Create averaged encoding for better accuracy
+            print(f"🔄 Creating averaged face encoding from {len(collected_encodings)} photos")
+            averaged_encoding = np.mean(collected_encodings, axis=0)
             
+            # Validate the averaged encoding by comparing with individual encodings
+            distances = [face_recognition.face_distance([averaged_encoding], enc)[0] for enc in collected_encodings]
+            avg_distance = np.mean(distances)
+            max_distance = np.max(distances)
+            
+            print(f"📊 Encoding quality - Avg distance: {avg_distance:.3f}, Max distance: {max_distance:.3f}")
+            
+            if max_distance > 0.4:  # If any individual encoding is too different
+                print("⚠️ High variance in face encodings, using median instead of mean")
+                averaged_encoding = np.median(collected_encodings, axis=0)
+            
+            # Convert best face photo to base64 for storage
             face_photo_b64 = None
-            if ret_encode:
-                face_photo_b64 = base64.b64encode(buffer).decode('utf-8')
+            if best_photo is not None:
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+                ret_encode, buffer = cv2.imencode('.jpg', best_photo, encode_param)
+                
+                if ret_encode:
+                    face_photo_b64 = base64.b64encode(buffer).decode('utf-8')
             
             # Add to known faces
-            self.known_face_encodings.append(face_encoding)
+            self.known_face_encodings.append(averaged_encoding)
             self.known_face_names.append(name)
             
             # Store face photo
@@ -1017,15 +1183,98 @@ class FaceRecognitionSystem:
             await self.broadcast_event('user_added', {
                 'name': name, 
                 'authorized': authorized,
-                'method': 'webcam',
-                'photo': face_photo_b64
+                'method': 'webcam_multi',
+                'photos_captured': capture_count,
+                'photo': face_photo_b64,
+                'encoding_quality': {
+                    'avg_distance': float(avg_distance),
+                    'max_distance': float(max_distance)
+                }
             })
             
-            print(f"Successfully added user '{name}' from webcam with profile photo")
-            return {'success': True, 'message': f'User "{name}" added successfully'}
+            print(f"✅ Successfully added user '{name}' from {capture_count} webcam photos with averaged encoding")
+            return {
+                'success': True, 
+                'message': f'User "{name}" added successfully with {capture_count} photos',
+                'photos_captured': capture_count,
+                'encoding_quality': {
+                    'avg_distance': float(avg_distance),
+                    'max_distance': float(max_distance)
+                }
+            }
             
         except Exception as e:
             print(f"Error adding user from webcam: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    async def reset_face_data(self) -> dict:
+        """Reset all face recognition data"""
+        try:
+            print("🔄 Resetting all face recognition data...")
+            
+            # Clear all face data from memory
+            self.known_face_encodings = []
+            self.known_face_names = []
+            self.authorized_users = set()
+            self.user_photos = {}
+            
+            # Remove face data file
+            if os.path.exists(self.data_file):
+                os.remove(self.data_file)
+                print(f"✅ Removed face data file: {self.data_file}")
+            
+            # Clear recognition log
+            if os.path.exists(self.log_file):
+                os.remove(self.log_file)
+                print(f"✅ Cleared recognition log: {self.log_file}")
+            
+            # Broadcast reset event to all clients
+            await self.broadcast_event('face_data_reset', {
+                'message': 'All face recognition data has been cleared'
+            })
+            
+            print("✅ Face recognition data reset completed")
+            return {'success': True, 'message': 'All face recognition data has been cleared successfully'}
+            
+        except Exception as e:
+            print(f"❌ Error resetting face data: {e}")
+            return {'success': False, 'error': str(e)}
+
+    async def reboot_system(self) -> dict:
+        """Reboot the Raspberry Pi system"""
+        try:
+            print("System reboot requested")
+            
+            # Broadcast reboot notification to all clients
+            await self.broadcast_event('system_rebooting', {
+                'message': 'System is rebooting, please wait...',
+                'countdown': 5
+            })
+            
+            # Give clients time to receive the message
+            await asyncio.sleep(2)
+            
+            # Cleanup resources before reboot
+            self.cleanup()
+            
+            # Schedule reboot in 3 seconds to allow cleanup
+            import subprocess
+            import sys
+            
+            # Use async subprocess to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(['sudo', 'shutdown', '-r', '+0'], check=True)
+            )
+            
+            return {'success': True, 'message': 'System reboot initiated'}
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Error executing reboot command: {e}")
+            return {'success': False, 'error': 'Failed to execute reboot command. Make sure the user has sudo privileges.'}
+        except Exception as e:
+            print(f"Error rebooting system: {e}")
             return {'success': False, 'error': str(e)}
 
     def draw_face_annotations(self, frame, results):
