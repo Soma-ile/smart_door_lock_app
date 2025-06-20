@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { mockCameraFeed } from '@/utils/mockData';
 import { doorLockApi } from '@/utils/doorLockApi';
-import { Camera, Zap, FileSliders as Sliders, Video, Image as ImageIcon, X, Trash2, Share, Download } from 'lucide-react-native';
+import { Camera, Zap, Image as ImageIcon, X, Trash2, Share, Download } from 'lucide-react-native';
 
 const { width } = Dimensions.get('window');
 const imageSize = (width - 48) / 3; // 3 images per row with padding
@@ -289,22 +289,12 @@ export default function CameraScreen() {
               <Text style={styles.controlText}>Snapshot</Text>
             </TouchableOpacity>
             
-            <TouchableOpacity style={styles.controlButton}>
-              <Video size={28} color="#00D4FF" />
-              <Text style={styles.controlText}>Record</Text>
-            </TouchableOpacity>
-            
             <TouchableOpacity 
               style={styles.controlButton}
               onPress={openGallery}
             >
               <ImageIcon size={28} color="#00D4FF" />
               <Text style={styles.controlText}>Gallery</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.controlButton}>
-              <Sliders size={28} color="#00D4FF" />
-              <Text style={styles.controlText}>Settings</Text>
             </TouchableOpacity>
           </View>
         </View>

@@ -4,8 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { DoorStatusCard } from '@/components/DoorStatusCard';
 import { DoorLockButton } from '@/components/DoorLockButton';
 import { CameraView } from '@/components/CameraView';
-import { RecentActivityList } from '@/components/RecentActivityList';
-import { mockDoorStatus, mockAccessHistory, mockCameraFeed } from '@/utils/mockData';
+import { mockDoorStatus, mockCameraFeed } from '@/utils/mockData';
 import { doorLockApi } from '@/utils/doorLockApi';
 
 export default function HomeScreen() {
@@ -199,12 +198,6 @@ export default function HomeScreen() {
             isLoading={isDoorLockLoading}
           />
         </View>
-        
-        {/* Recent Activity */}
-        <RecentActivityList 
-          activities={mockAccessHistory.slice(0, 3)} 
-          title="Recent Activity"
-        />
       </ScrollView>
       
       {/* Fullscreen camera overlay */}
